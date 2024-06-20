@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+
+  web:
+    build: ./project
+    ports:
+      - 8004:8000
+    command: uvicorn app.main:app --host 0.0.0.0 --reload --debug
+    volumes:
+      - ./project:/usr/src/app
+    stdin_open: true
+    tty: true
+    env_file: ./project/.env
+    depends_on:
+      - rabbit
+
+  worker:
+    build: ./project
+    command: celery worker --app=worker.main.celery --loglevel=info --logfile=logs/celery-worker.log -Q "celery,pending_actions,trummodity_services,federation_services" --pool=gevent --concurrency=100
+    volumes:
+      - ./project:/usr/src/app
+    env_file: ./project/.env
+    depends_on:
+      - web
+      - rabbit
+
+  beat:
+    build: ./project
+    command: celery beat --app=worker.main.celery --loglevel=info --logfile=logs/celery-beat.log
+    volumes:
+      - ./project:/usr/src/app
+    env_file: ./project/.env
+    depends_on:
+      - web
+      - rabbit
+
+  rabbit-consumer:
+    build: ./project
+    command: python consumer.py > logs/consumer.log
+    volumes:
+      - ./project:/usr/src/app
+    env_file: ./project/.env
+    depends_on:
+      - worker
+
+  rabbit:
+    hostname: rabbit
+    image: rabbitmq:management
+    env_file: ./project/.env
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  dashboard:
+    build: ./project
+    command:  flower --app=worker.main.celery --port=5555 --broker=${CELERY_BROKER_URL}
+    ports:
+      - 5556:5555
+    env_file: ./project/.env
+    depends_on:
+      - web
+      - rabbit
+      - worker
+  
+  mongo:
+    image: mongo:4.4.6-bionic
+    container_name: "worker_sync"
+    ports:
+        - "127.0.0.1:27019:27017"
+    expose:
+      - "27017"
+    volumes:
+      # - mongo-data: /data/db
+      - ./mongo-data:/data/db
+    # Creating testing databases
+    # docker-compose exec -T db sh -c 'mongorestore --gzip --archive' < ./dumps/worker_sync.dump
+    depends_on:
+      - web
+      - rabbit
+      - worker
